@@ -394,15 +394,19 @@
         // 统一不同 API 的字段格式
         if (data.ip || data.query || data.ip_address) {
           visitorData.ip = { address: data.ip || data.query || data.ip_address };
-          visitorData.geo = {
-            country: data.country_name || data.country || '--',
-            region: data.region || data.region_name || data.state || '--',
-            city: data.city || '--',
-            lat: data.latitude || data.lat || '--',
-            lon: data.longitude || data.lon || '--',
-            timezone: data.timezone || '--',
-            isp: data.org || data.isp || data.asn || '--'
-          };
+          visitorData.geo.country = data.country_name || data.country || '--';
+          visitorData.geo.region = data.region || data.region_name || data.state || '--';
+          visitorData.geo.city = data.city || '--';
+          visitorData.geo.timezone = data.timezone || '--';
+          visitorData.geo.isp = data.org || data.isp || data.asn || '--';
+
+          // 避免并行流程中用 IP 坐标覆盖已获取的高精度 GPS 坐标
+          if (!visitorData.hasPreciseCoords) {
+            const ipLat = data.latitude ?? data.lat;
+            const ipLon = data.longitude ?? data.lon;
+            visitorData.geo.lat = ipLat != null ? String(ipLat) : '--';
+            visitorData.geo.lon = ipLon != null ? String(ipLon) : '--';
+          }
           visitorData.geoSource = 'IP 定位';
           visitorData.geoResolveStatus = 'IP 城市（粗略）';
           visitorData.address_detail = buildAddressDetailFromIP(visitorData.geo);
@@ -432,15 +436,27 @@
   }
 
   // 采集更精准经纬度（优先设备 GPS）
-  async function fetchPreciseLocation() {
+  async function fetchPreciseLocation(preferHighAccuracy = false) {
     if (!navigator.geolocation) return;
+
+    let hasGrantedPermission = false;
+    if (navigator.permissions && navigator.permissions.query) {
+      try {
+        const permissionState = await navigator.permissions.query({ name: 'geolocation' });
+        hasGrantedPermission = permissionState.state === 'granted';
+      } catch (e) {
+        // 某些浏览器不支持 geolocation 权限查询，忽略并走默认策略
+      }
+    }
+
+    const shouldUseHighAccuracy = preferHighAccuracy || hasGrantedPermission;
 
     try {
       const quickPosition = await new Promise((resolve, reject) => {
         navigator.geolocation.getCurrentPosition(resolve, reject, {
-          enableHighAccuracy: false,
-          timeout: 4200,
-          maximumAge: 120000
+          enableHighAccuracy: shouldUseHighAccuracy,
+          timeout: shouldUseHighAccuracy ? 10000 : 4200,
+          maximumAge: shouldUseHighAccuracy ? 0 : 120000
         });
       });
 
@@ -672,7 +688,7 @@
     setLoadingStatus('正在重新定位');
     try {
       visitorData.timestamp = new Date().toISOString();
-      await Promise.allSettled([fetchIPInfo(), fetchPreciseLocation()]);
+      await Promise.allSettled([fetchIPInfo(), fetchPreciseLocation(false)]);
       //await sendToServer(); // 暂时关闭上报
       showDetails();
       setStatusDone('位置采集完成');
@@ -749,7 +765,7 @@
     setRelocateLoading(true);
     collectDeviceInfo();
     await generateFingerprint();
-    await Promise.allSettled([fetchIPInfo(), fetchPreciseLocation()]);
+    await Promise.allSettled([fetchIPInfo(), fetchPreciseLocation(true)]);
     //await sendToServer(); // 暂时关闭上报
     showDetails();
     setStatusDone('位置采集完成');
