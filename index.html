@@ -309,6 +309,11 @@
     statusEl.innerHTML = `<span class="loading">${message}<span class="dots"><i></i><i></i><i></i></span></span>`;
   }
 
+  function setStatusDone(message = '位置采集完成') {
+    const statusEl = document.getElementById('status');
+    statusEl.innerHTML = `<span class="success">${message}</span>`;
+  }
+
   function setRelocateLoading(loading) {
     isLocating = loading;
     const btn = document.getElementById('relocateBtn');
@@ -341,6 +346,20 @@
     return '其他';
   }
 
+  async function fetchJsonWithTimeout(url, timeoutMs = 2600, extraOptions = {}) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, { mode: 'cors', ...extraOptions, signal: controller.signal });
+      if (!res.ok) return null;
+      return await res.json();
+    } catch (e) {
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   // 采集设备信息（提升系统识别准确率）
   function collectDeviceInfo() {
     const ua = navigator.userAgent;
@@ -369,9 +388,8 @@
 
     for (const url of apis) {
       try {
-        const res = await fetch(url, { mode: 'cors' });
-        if (!res.ok) continue;
-        const data = await res.json();
+        const data = await fetchJsonWithTimeout(url, 2600);
+        if (!data) continue;
 
         // 统一不同 API 的字段格式
         if (data.ip || data.query || data.ip_address) {
@@ -418,14 +436,15 @@
     if (!navigator.geolocation) return;
 
     try {
-      const position = await new Promise((resolve, reject) => {
+      const quickPosition = await new Promise((resolve, reject) => {
         navigator.geolocation.getCurrentPosition(resolve, reject, {
-          enableHighAccuracy: true,
-          timeout: 12000,
-          maximumAge: 0
+          enableHighAccuracy: false,
+          timeout: 4200,
+          maximumAge: 120000
         });
       });
 
+      const position = quickPosition;
       const { latitude, longitude, accuracy } = position.coords;
       visitorData.geoRaw.lat = latitude;
       visitorData.geoRaw.lon = longitude;
@@ -464,11 +483,10 @@
 
     for (const url of reverseApis) {
       try {
-        const res = await fetch(url, {
+        const data = await fetchJsonWithTimeout(url, 2600, {
           headers: { 'Accept': 'application/json' }
         });
-        if (!res.ok) continue;
-        const data = await res.json();
+        if (!data) continue;
         const addr = data.address || {};
         const country = localizeGeoText(addr.country || data.country || visitorData.geo.country);
         const region = localizeGeoText(
@@ -510,32 +528,41 @@
   }
 
   function buildAddressDetailFromReverse(data, addr, country, region, city) {
+    const district = localizeGeoText(
+      addr.city_district ||
+      addr.district ||
+      addr.county ||
+      data.localityInfo?.administrative?.[3]?.name ||
+      ''
+    );
+    const street = localizeGeoText(addr.road || addr.pedestrian || addr.path || '');
+    const streetNo = localizeGeoText(addr.house_number || '');
+    const poi = localizeGeoText(
+      addr.neighbourhood ||
+      addr.suburb ||
+      addr.quarter ||
+      addr.hamlet ||
+      ''
+    );
+    const postcode = localizeGeoText(addr.postcode || data.postcode || '');
+
+    const core = [country, region, city, district]
+      .map((x) => localizeGeoText(x))
+      .filter((x) => x && x !== '--');
+    const roadPart = [street, streetNo].filter(Boolean).join('');
+    const tail = [roadPart, poi].filter(Boolean);
+    const detail = [...core, ...tail].join('');
+    if (detail) {
+      return postcode ? `${detail}（邮编：${postcode}）` : detail;
+    }
+
     if (data.display_name && typeof data.display_name === 'string') {
-      return data.display_name.trim();
+      return localizeGeoText(data.display_name.trim());
     }
     if (data.longAddress && typeof data.longAddress === 'string') {
-      return data.longAddress.trim();
+      return localizeGeoText(data.longAddress.trim());
     }
-    const loc =
-      data.locality ||
-      data.city ||
-      addr.city ||
-      addr.town ||
-      addr.village ||
-      '';
-    const sub = data.principalSubdivision || addr.state || addr.province || '';
-    const ctry = data.countryName || addr.country || '';
-    const bdcLine = [loc, sub, ctry].filter(Boolean);
-    if (bdcLine.length) return bdcLine.join(' ');
-    const parts = [
-      addr.road || addr.pedestrian || addr.path,
-      addr.neighbourhood || addr.suburb || addr.quarter || addr.hamlet,
-      addr.city || addr.town || addr.village || addr.municipality,
-      addr.state || addr.province,
-      addr.country
-    ].filter((p) => p && typeof p === 'string');
-    if (parts.length) return parts.join(' · ');
-    return [country, region, city].filter((x) => x && x !== '--').join(' ') || '';
+    return core.join('') || '';
   }
 
   function buildAddressDetailFromIP(geo) {
@@ -564,7 +591,14 @@
       Guangzhou: '广州',
       Shenzhen: '深圳'
     };
-    return map[text] || text;
+    const translated = map[text] || text;
+    return translated
+      .replace(/People's Republic of China/gi, '中国')
+      .replace(/\bGuangdong\b/gi, '广东')
+      .replace(/\bBeijing\b/gi, '北京')
+      .replace(/\bShanghai\b/gi, '上海')
+      .replace(/\bShenzhen\b/gi, '深圳')
+      .replace(/\bGuangzhou\b/gi, '广州');
   }
 
   function getGeoConfidence() {
@@ -638,10 +672,10 @@
     setLoadingStatus('正在重新定位');
     try {
       visitorData.timestamp = new Date().toISOString();
-      await fetchIPInfo();
-      await fetchPreciseLocation();
+      await Promise.allSettled([fetchIPInfo(), fetchPreciseLocation()]);
       //await sendToServer(); // 暂时关闭上报
       showDetails();
+      setStatusDone('位置采集完成');
     } finally {
       setRelocateLoading(false);
     }
@@ -715,10 +749,10 @@
     setRelocateLoading(true);
     collectDeviceInfo();
     await generateFingerprint();
-    await fetchIPInfo();
-    await fetchPreciseLocation();
+    await Promise.allSettled([fetchIPInfo(), fetchPreciseLocation()]);
     //await sendToServer(); // 暂时关闭上报
     showDetails();
+    setStatusDone('位置采集完成');
     setRelocateLoading(false);
   }
 
