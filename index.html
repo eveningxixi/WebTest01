@@ -409,7 +409,8 @@
           }
           visitorData.geoSource = 'IP 定位';
           visitorData.geoResolveStatus = 'IP 城市（粗略）';
-          visitorData.address_detail = buildAddressDetailFromIP(visitorData.geo);
+          // IP 仅能到城市级，不作为“详细地址”展示和入库
+          visitorData.address_detail = '';
           return; // 成功就退出
         }
       } catch (e) {
@@ -595,6 +596,19 @@
       .replace(/"/g, '&quot;');
   }
 
+  function toSimplifiedChinese(text) {
+    if (!text || typeof text !== 'string') return text;
+    const tradToSimpMap = {
+      '臺': '台', '灣': '湾', '國': '国', '縣': '县', '區': '区', '鄉': '乡', '鎮': '镇',
+      '裡': '里', '號': '号', '樓': '楼', '單': '单', '雙': '双', '門': '门', '島': '岛',
+      '廣': '广', '東': '东', '龍': '龙', '蘇': '苏', '雲': '云', '陽': '阳', '陰': '阴',
+      '車': '车', '醫': '医', '學': '学', '術': '术', '場': '场', '華': '华', '聯': '联',
+      '務': '务', '層': '层', '與': '与', '處': '处', '達': '达', '觀': '观', '點': '点',
+      '體': '体', '電': '电', '網': '网', '訊': '讯', '線': '线', '衛': '卫'
+    };
+    return String(text).replace(/[\u4e00-\u9fff]/g, (ch) => tradToSimpMap[ch] || ch);
+  }
+
   function localizeGeoText(text) {
     if (!text || typeof text !== 'string') return text;
     const map = {
@@ -607,7 +621,7 @@
       Guangzhou: '广州',
       Shenzhen: '深圳'
     };
-    const translated = map[text] || text;
+    const translated = toSimplifiedChinese(map[text] || text);
     return translated
       .replace(/People's Republic of China/gi, '中国')
       .replace(/\bGuangdong\b/gi, '广东')
@@ -630,6 +644,11 @@
       return { level: 'mid', text: '中（城区级）', className: 'badge-mid' };
     }
     return { level: 'low', text: '低（IP 粗略）', className: 'badge-low' };
+  }
+
+  function updateGeoConfidence() {
+    visitorData.geoConfidence = getGeoConfidence();
+    return visitorData.geoConfidence;
   }
 
   // 生成指纹
@@ -659,10 +678,11 @@
   }
 
   // 发送到 Netlify Function
-  /*
   async function sendToServer() {
     const statusEl = document.getElementById('status');
     try {
+      // 发送前刷新可信度，确保前端展示与 DB 入库一致
+      updateGeoConfidence();
       const res = await fetch('/.netlify/functions/log-visitor', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -679,7 +699,6 @@
     }
     showDetails();
   }
-  */
 
   // 重新触发定位并上报
   async function relocalize() {
@@ -689,7 +708,7 @@
     try {
       visitorData.timestamp = new Date().toISOString();
       await Promise.allSettled([fetchIPInfo(), fetchPreciseLocation(false)]);
-      //await sendToServer(); // 暂时关闭上报
+      await sendToServer();
       showDetails();
       setStatusDone('位置采集完成');
     } finally {
@@ -701,7 +720,7 @@
   function showDetails() {
     const d = document.getElementById('details');
     const ip = visitorData.ip.address;
-    visitorData.geoConfidence = getGeoConfidence();
+    updateGeoConfidence();
     const addressDetailHtml = visitorData.address_detail
       ? escHtml(visitorData.address_detail)
       : '<span class="warn">暂无（需 GPS 逆地理编码成功，或当前为 IP 粗略信息）</span>';
@@ -766,7 +785,7 @@
     collectDeviceInfo();
     await generateFingerprint();
     await Promise.allSettled([fetchIPInfo(), fetchPreciseLocation(true)]);
-    //await sendToServer(); // 暂时关闭上报
+    await sendToServer();
     showDetails();
     setStatusDone('位置采集完成');
     setRelocateLoading(false);
