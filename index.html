@@ -568,12 +568,12 @@
 
     const [orderedCity, orderedDistrict] = normalizeAdminOrder(city, district);
 
-    const core = [country, region, orderedCity, orderedDistrict]
+    const core = dedupeAddressParts([country, region, orderedCity, orderedDistrict]
       .map((x) => localizeGeoText(x))
-      .filter((x) => x && x !== '--');
+      .filter((x) => x && x !== '--'));
     const roadPart = [street, streetNo].filter(Boolean).join('');
-    const tail = [township, roadPart, poi].filter(Boolean);
-    const detail = [...core, ...tail].join('');
+    const tail = dedupeAddressParts([township, roadPart, poi].filter(Boolean), core);
+    const detail = dedupeAddressParts([...core, ...tail]).join('');
     if (detail) {
       return postcode ? `${detail}（邮编：${postcode}）` : detail;
     }
@@ -598,6 +598,42 @@
       return [districtText, cityText];
     }
     return [cityText, districtText];
+  }
+
+  function dedupeAddressParts(parts, seed = []) {
+    const result = [...seed];
+    for (const raw of parts) {
+      const part = collapseRepeatedAdminName(localizeGeoText(raw || '').trim());
+      if (!part || part === '--') continue;
+      const duplicated = result.some((existing) => {
+        const e = String(existing).trim();
+        if (!e) return false;
+        // 去掉“市/区/县/镇”等后缀后相同，视为重复行政区
+        if (normalizeAdminToken(e) === normalizeAdminToken(part)) return true;
+        // 包含关系也视为重复，避免“浏阳市市”或同名片段重复拼接
+        return e.includes(part) || part.includes(e);
+      });
+      if (!duplicated) result.push(part);
+    }
+    return seed.length ? result.slice(seed.length) : result;
+  }
+
+  function normalizeAdminToken(text) {
+    return String(text)
+      .replace(/\s+/g, '')
+      .replace(/(省|市|区|县|镇|乡|街道|自治区|特别行政区)$/g, '');
+  }
+
+  function collapseRepeatedAdminName(text) {
+    const s = String(text || '').trim();
+    if (!s) return s;
+    // 处理“浏阳市浏阳市”这类整段重复
+    const half = Math.floor(s.length / 2);
+    if (s.length % 2 === 0 && s.slice(0, half) === s.slice(half)) {
+      return s.slice(0, half);
+    }
+    // 处理行政后缀词连续重复（如：xx市xx市、xx区xx区）
+    return s.replace(/((?:[\u4e00-\u9fff]{2,12})(?:市|区|县|镇|乡|街道))\1+/g, '$1');
   }
 
   function buildAddressDetailFromIP(geo) {
