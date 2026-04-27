@@ -647,9 +647,10 @@
   }
 
   function formatChinaAddress(parts) {
-    const normalized = dedupeAddressParts(parts || []);
+    const normalized = dedupeAddressParts((parts || []).map((p) => localizeGeoText(p)));
     if (!normalized.length) return '';
 
+    const hasChina = normalized.some((p) => /^(中国|中华人民共和国|中国大陆)$/.test(p));
     const provinceOrMunicipality = normalized.find((p) =>
       /(省|自治区|特别行政区|市)$/.test(p)
     ) || '';
@@ -658,9 +659,13 @@
     const township = normalized.find((p) => /(镇|乡|街道)$/.test(p)) || '';
     const road = normalized.find((p) => /(路|街|道|巷|弄)$/.test(p) || /号$/.test(p)) || '';
 
-    const picked = new Set([provinceOrMunicipality, city, district, township, road].filter(Boolean));
-    const rest = normalized.filter((p) => !picked.has(p));
-    return [...picked, ...rest].join('');
+    const adminOrdered = [provinceOrMunicipality, city, district, township, road].filter(Boolean);
+    const picked = new Set(adminOrdered);
+
+    // 明确移除国家词尾残留，国家只允许在最前或直接不显示
+    const rest = normalized.filter((p) => !picked.has(p) && !/^(中国|中华人民共和国|中国大陆)$/.test(p));
+    const ordered = dedupeAddressParts([...adminOrdered, ...rest]);
+    return `${hasChina ? '中国' : ''}${ordered.join('')}`;
   }
 
   function collapseRepeatedAdminName(text) {
