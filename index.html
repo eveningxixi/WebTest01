@@ -518,13 +518,10 @@
         const city =
           localizeGeoText(
             addr.city ||
-            addr.town ||
-            addr.village ||
             addr.county ||
             data.city ||
             data.locality ||
             data.localityInfo?.administrative?.[2]?.name ||
-            data.city ||
             visitorData.geo.city
           );
 
@@ -552,6 +549,12 @@
       data.localityInfo?.administrative?.[3]?.name ||
       ''
     );
+    const township = localizeGeoText(
+      addr.town ||
+      addr.village ||
+      addr.suburb ||
+      ''
+    );
     const street = localizeGeoText(addr.road || addr.pedestrian || addr.path || '');
     const streetNo = localizeGeoText(addr.house_number || '');
     const poi = localizeGeoText(
@@ -563,11 +566,13 @@
     );
     const postcode = localizeGeoText(addr.postcode || data.postcode || '');
 
-    const core = [country, region, city, district]
+    const [orderedCity, orderedDistrict] = normalizeAdminOrder(city, district);
+
+    const core = [country, region, orderedCity, orderedDistrict]
       .map((x) => localizeGeoText(x))
       .filter((x) => x && x !== '--');
     const roadPart = [street, streetNo].filter(Boolean).join('');
-    const tail = [roadPart, poi].filter(Boolean);
+    const tail = [township, roadPart, poi].filter(Boolean);
     const detail = [...core, ...tail].join('');
     if (detail) {
       return postcode ? `${detail}（邮编：${postcode}）` : detail;
@@ -580,6 +585,19 @@
       return localizeGeoText(data.longAddress.trim());
     }
     return core.join('') || '';
+  }
+
+  function normalizeAdminOrder(city, district) {
+    const cityText = localizeGeoText(city || '');
+    const districtText = localizeGeoText(district || '');
+    if (!cityText || !districtText) return [cityText, districtText];
+
+    const cityLooksTown = /(镇|鄉|乡|街道|村)$/.test(cityText);
+    const districtLooksCity = /(市|区|縣|县)$/.test(districtText);
+    if (cityLooksTown && districtLooksCity) {
+      return [districtText, cityText];
+    }
+    return [cityText, districtText];
   }
 
   function buildAddressDetailFromIP(geo) {
