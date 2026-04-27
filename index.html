@@ -493,14 +493,14 @@
   // 经纬度逆地理编码（多源兜底）
   async function reverseGeocode(lat, lon) {
     const reverseApis = [
+      `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}&zoom=20&addressdetails=1&namedetails=1&extratags=1&accept-language=zh-CN`,
       `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${encodeURIComponent(lat)}&longitude=${encodeURIComponent(lon)}&localityLanguage=zh`,
-      `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}&zoom=18&addressdetails=1&accept-language=zh-CN`,
       `https://geocode.maps.co/reverse?lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}`
     ];
 
     for (const url of reverseApis) {
       try {
-        const data = await fetchJsonWithTimeout(url, 2600, {
+        const data = await fetchJsonWithTimeout(url, 5000, {
           headers: { 'Accept': 'application/json' }
         });
         if (!data) continue;
@@ -531,7 +531,7 @@
           visitorData.geo.city = city || '--';
           visitorData.address_detail = buildAddressDetailFromReverse(data, addr, country, region, city);
           visitorData.geoSource = '设备 GPS + 逆地理编码';
-          visitorData.geoResolveStatus = 'GPS 城市反查成功';
+          visitorData.geoResolveStatus = visitorData.address_detail ? 'GPS 街道级反查成功' : 'GPS 城市反查成功';
           return true;
         }
       } catch (e) {
@@ -555,8 +555,26 @@
       addr.suburb ||
       ''
     );
-    const street = localizeGeoText(addr.road || addr.pedestrian || addr.path || '');
-    const streetNo = localizeGeoText(addr.house_number || '');
+    const street = localizeGeoText(
+      addr.road ||
+      addr.street ||
+      addr.residential ||
+      addr.footway ||
+      addr.cycleway ||
+      addr.pedestrian ||
+      addr.path ||
+      addr.avenue ||
+      data.street ||
+      data.localityInfo?.informative?.[0]?.description ||
+      ''
+    );
+    const streetNo = localizeGeoText(
+      addr.house_number ||
+      addr.house ||
+      addr.building ||
+      data.house_number ||
+      ''
+    );
     const poi = localizeGeoText(
       addr.neighbourhood ||
       addr.suburb ||
@@ -572,8 +590,12 @@
       .map((x) => localizeGeoText(x))
       .filter((x) => x && x !== '--'));
     const roadPart = [street, streetNo].filter(Boolean).join('');
-    const tail = dedupeAddressParts([township, roadPart, poi].filter(Boolean), core);
-    const detail = dedupeAddressParts([...core, ...tail]).join('');
+    const landmark = localizeGeoText(addr.amenity || addr.attraction || addr.building || '');
+    const tail = dedupeAddressParts([township, roadPart, landmark, poi].filter(Boolean), core);
+    const detailParts = dedupeAddressParts([...core, ...tail]);
+    const detail = (country === '中国' || country === '中国大陆')
+      ? formatChinaAddress(detailParts)
+      : detailParts.join('');
     if (detail) {
       return postcode ? `${detail}（邮编：${postcode}）` : detail;
     }
@@ -622,6 +644,23 @@
     return String(text)
       .replace(/\s+/g, '')
       .replace(/(省|市|区|县|镇|乡|街道|自治区|特别行政区)$/g, '');
+  }
+
+  function formatChinaAddress(parts) {
+    const normalized = dedupeAddressParts(parts || []);
+    if (!normalized.length) return '';
+
+    const provinceOrMunicipality = normalized.find((p) =>
+      /(省|自治区|特别行政区|市)$/.test(p)
+    ) || '';
+    const city = normalized.find((p) => /市$/.test(p) && p !== provinceOrMunicipality) || '';
+    const district = normalized.find((p) => /(区|县)$/.test(p)) || '';
+    const township = normalized.find((p) => /(镇|乡|街道)$/.test(p)) || '';
+    const road = normalized.find((p) => /(路|街|道|巷|弄)$/.test(p) || /号$/.test(p)) || '';
+
+    const picked = new Set([provinceOrMunicipality, city, district, township, road].filter(Boolean));
+    const rest = normalized.filter((p) => !picked.has(p));
+    return [...picked, ...rest].join('');
   }
 
   function collapseRepeatedAdminName(text) {
